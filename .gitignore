@@ -33,6 +33,8 @@ wandb/
 *.json
 *.yaml
 *.yml
+!configs/config_NH_center_SimpleMultirotor_3D.ini
+!airsim_settings/settings_multirotor.json
 reviewers/
 第二轮审稿意见/
 .workbuddy/
