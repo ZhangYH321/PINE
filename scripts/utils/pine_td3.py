@@ -1,4 +1,4 @@
-from typing import Any, Dict, List, NamedTuple, Optional, Tuple, Type, Union
+from typing import Any, Dict, List, Optional, Tuple, Type, Union
 
 import numpy as np
 import torch as th
@@ -6,79 +6,42 @@ import torch.nn as nn
 import torch.nn.functional as F
 from stable_baselines3 import TD3
 from stable_baselines3.common.buffers import ReplayBuffer
-from stable_baselines3.common.policies import BaseModel, ContinuousCritic
+from stable_baselines3.common.policies import BaseModel
 from stable_baselines3.common.preprocessing import get_action_dim
 from stable_baselines3.common.torch_layers import (
     BaseFeaturesExtractor,
-    CombinedExtractor,
     FlattenExtractor,
-    NatureCNN,
     create_mlp,
 )
 from stable_baselines3.common.type_aliases import Schedule
 from stable_baselines3.common.utils import polyak_update
-from stable_baselines3.common.vec_env import VecNormalize
-from stable_baselines3.td3.policies import TD3Policy
-
-
-class PineReplayBufferSamples(NamedTuple):
-    observations: th.Tensor
-    actions: th.Tensor
-    next_observations: th.Tensor
-    dones: th.Tensor
-    rewards: th.Tensor
-    rho: th.Tensor
+from stable_baselines3.td3.policies import Actor, TD3Policy
 
 
 class PineReplayBuffer(ReplayBuffer):
-    """Replay buffer that stores the PGVL sample weight rho_t from env infos."""
+    """Compatibility alias for ordinary uniform TD3 replay.
 
-    def __init__(self, *args: Any, rho_default: float = 1.0, **kwargs: Any) -> None:
-        super().__init__(*args, **kwargs)
-        self.rho_default = float(rho_default)
-        self.rhos = np.full((self.buffer_size, self.n_envs), self.rho_default, dtype=np.float32)
-
-    def add(self, obs: np.ndarray, next_obs: np.ndarray, action: np.ndarray,
-            reward: np.ndarray, done: np.ndarray, infos: List[Dict[str, Any]]) -> None:
-        rhos = np.full((self.n_envs,), self.rho_default, dtype=np.float32)
-        for env_idx, info in enumerate(infos):
-            if env_idx >= self.n_envs:
-                break
-            if isinstance(info, dict):
-                rho_value = info.get("pgvl_rho", info.get("rho_t", self.rho_default))
-                rhos[env_idx] = float(rho_value)
-
-        self.rhos[self.pos] = np.nan_to_num(
-            rhos,
-            nan=self.rho_default,
-            posinf=self.rho_default,
-            neginf=self.rho_default,
-        )
-        super().add(obs, next_obs, action, reward, done, infos)
-
-    def _get_samples(self, batch_inds: np.ndarray, env: Optional[VecNormalize] = None) -> PineReplayBufferSamples:
-        env_indices = np.random.randint(0, high=self.n_envs, size=(len(batch_inds),))
-
-        if self.optimize_memory_usage:
-            next_obs = self._normalize_obs(self.observations[(batch_inds + 1) % self.buffer_size, env_indices, :], env)
-        else:
-            next_obs = self._normalize_obs(self.next_observations[batch_inds, env_indices, :], env)
-
-        data = (
-            self._normalize_obs(self.observations[batch_inds, env_indices, :], env),
-            self.actions[batch_inds, env_indices, :],
-            next_obs,
-            (self.dones[batch_inds, env_indices] * (1 - self.timeouts[batch_inds, env_indices])).reshape(-1, 1),
-            self._normalize_reward(self.rewards[batch_inds, env_indices].reshape(-1, 1), env),
-            self.rhos[batch_inds, env_indices].reshape(-1, 1),
-        )
-        return PineReplayBufferSamples(*tuple(map(self.to_torch, data)))
+    Adaptive physics fusion is computed from observations inside the critic;
+    the replay buffer stores no transition-specific learning weights.
+    """
 
 
 class PhysicsGuidedCritic(BaseModel):
     """
-    TD3 critic with spatial and physical streams:
-    Q_i = omega_spatial * Q_i^S(s_spatial, a) + omega_physical * Q_i^P(s_physical, a).
+    TD3 critic with an optional physical stream and adaptive fusion gate.
+
+    The physical stream is enabled only when the policy-visible state
+    indicates a meaningful, trusted headwind and sufficient obstacle clearance:
+
+        Q_i = Q_i^S(s_spatial, a) + g(s) Q_i^P(s_physical, a)
+        g(s) = c(s) h(s) (1 - o(s)).
+
+    When the physical stream is present but ``use_adaptive_physics_gate=False``,
+    the critic uses ``Q_i = Q_i^S + Q_i^P``.  With the physical stream
+    disabled, only ``Q_i^S`` is built and used.
+
+    ``omega_*`` are retained for checkpoint/config compatibility with the
+    previous fixed dual-stream ablation and are not used by adaptive fusion.
     """
 
     features_extractor: BaseFeaturesExtractor
@@ -94,10 +57,13 @@ class PhysicsGuidedCritic(BaseModel):
         normalize_images: bool = True,
         n_critics: int = 2,
         share_features_extractor: bool = True,
-        physical_feature_dim: int = 4,
+        physical_feature_dim: int = 5,
         spatial_feature_dim: Optional[int] = None,
-        omega_spatial: float = 0.7,
-        omega_physical: float = 0.3,
+        use_physics_branch: Optional[bool] = None,
+        use_adaptive_physics_gate: bool = True,
+        obstacle_feature_dim: int = 25,
+        obstacle_proximity_threshold: float = 0.60,
+        obstacle_transition: float = 0.15,
     ) -> None:
         super().__init__(
             observation_space,
@@ -123,8 +89,21 @@ class PhysicsGuidedCritic(BaseModel):
                 f"spatial_feature_dim must be {inferred_spatial_dim}, got {self.spatial_feature_dim}."
             )
 
-        self.omega_spatial = float(omega_spatial)
-        self.omega_physical = float(omega_physical)
+        self.use_adaptive_physics_gate = bool(use_adaptive_physics_gate)
+        # Preserve the behavior of existing checkpoints/configs, where the
+        # gate flag was also the physical-branch switch.
+        self.use_physics_branch = (
+            self.use_adaptive_physics_gate
+            if use_physics_branch is None
+            else bool(use_physics_branch)
+        )
+        self.obstacle_feature_dim = int(obstacle_feature_dim)
+        self.obstacle_proximity_threshold = float(obstacle_proximity_threshold)
+        self.obstacle_transition = float(obstacle_transition)
+        if not 0 < self.obstacle_feature_dim <= self.spatial_feature_dim:
+            raise ValueError("obstacle_feature_dim must fit inside spatial features.")
+        if self.obstacle_proximity_threshold <= 0.0 or self.obstacle_transition <= 0.0:
+            raise ValueError("Obstacle gate threshold and transition must be positive.")
         self.share_features_extractor = share_features_extractor
         self.n_critics = n_critics
 
@@ -136,13 +115,14 @@ class PhysicsGuidedCritic(BaseModel):
             spatial_net = nn.Sequential(
                 *create_mlp(self.spatial_feature_dim + action_dim, 1, net_arch, activation_fn)
             )
-            physical_net = nn.Sequential(
-                *create_mlp(self.physical_feature_dim + action_dim, 1, net_arch, activation_fn)
-            )
             self.add_module(f"qf{idx}_spatial", spatial_net)
-            self.add_module(f"qf{idx}_physical", physical_net)
             self.spatial_q_networks.append(spatial_net)
-            self.physical_q_networks.append(physical_net)
+            if self.use_physics_branch:
+                physical_net = nn.Sequential(
+                    *create_mlp(self.physical_feature_dim + action_dim, 1, net_arch, activation_fn)
+                )
+                self.add_module(f"qf{idx}_physical", physical_net)
+                self.physical_q_networks.append(physical_net)
 
     def _split_features(self, features: th.Tensor) -> Tuple[th.Tensor, th.Tensor]:
         if features.dim() > 2:
@@ -153,16 +133,75 @@ class PhysicsGuidedCritic(BaseModel):
         physical_features = features[:, -self.physical_feature_dim:]
         return spatial_features, physical_features
 
+    @staticmethod
+    def _smooth_gate(value: th.Tensor, threshold: float, transition: float) -> th.Tensor:
+        x = ((value - threshold) / transition).clamp(0.0, 1.0)
+        return x * x * (3.0 - 2.0 * x)
+
+    def _adaptive_gate(
+        self, spatial_features: th.Tensor, physical_features: th.Tensor
+    ) -> Tuple[th.Tensor, th.Tensor, th.Tensor, th.Tensor]:
+        """Return g, h, c, o from normalized policy-visible features.
+
+        The first physical feature is signed wind projected onto the goal
+        direction, encoded as 0.5 for no wind. Values below 0.5 therefore
+        represent headwind. The first spatial features are obstacle proximity
+        values where larger means closer.
+        """
+        wind_along_goal = physical_features[:, 0:1].clamp(0.0, 1.0)
+        headwind_strength = ((0.5 - wind_along_goal) * 2.0).clamp(0.0, 1.0)
+        confidence = physical_features[:, 4:5].clamp(0.0, 1.0)
+        obstacle_raw = spatial_features[:, : self.obstacle_feature_dim].amax(
+            dim=1, keepdim=True
+        ).clamp(0.0, 1.0)
+        obstacle_proximity = self._smooth_gate(
+            obstacle_raw,
+            self.obstacle_proximity_threshold - self.obstacle_transition,
+            self.obstacle_transition,
+        )
+        gate = confidence * headwind_strength * (1.0 - obstacle_proximity)
+        return gate, headwind_strength, confidence, obstacle_proximity
+
+    def physics_gate(self, obs: th.Tensor) -> Tuple[th.Tensor, ...]:
+        """Expose gate components for diagnostics without changing Q logic."""
+        features = self.extract_features(obs, self.features_extractor)
+        spatial_features, physical_features = self._split_features(features)
+        return self._adaptive_gate(spatial_features, physical_features)
+
+    def _fuse_q(
+        self,
+        spatial_q: th.Tensor,
+        physical_q: Optional[th.Tensor] = None,
+        gate: Optional[th.Tensor] = None,
+    ) -> th.Tensor:
+        if not self.use_physics_branch:
+            return spatial_q
+        assert physical_q is not None
+        if not self.use_adaptive_physics_gate:
+            return spatial_q + physical_q
+        assert gate is not None
+        return spatial_q + gate * physical_q
+
     def forward(self, obs: th.Tensor, actions: th.Tensor) -> Tuple[th.Tensor, ...]:
         with th.set_grad_enabled(not self.share_features_extractor):
             features = self.extract_features(obs, self.features_extractor)
         spatial_features, physical_features = self._split_features(features)
 
         spatial_input = th.cat([spatial_features, actions], dim=1)
+        if not self.use_physics_branch:
+            return tuple(spatial_net(spatial_input) for spatial_net in self.spatial_q_networks)
         physical_input = th.cat([physical_features, actions], dim=1)
+        gate = (
+            self._adaptive_gate(spatial_features, physical_features)[0]
+            if self.use_adaptive_physics_gate
+            else None
+        )
         return tuple(
-            self.omega_spatial * spatial_net(spatial_input)
-            + self.omega_physical * physical_net(physical_input)
+            self._fuse_q(
+                spatial_net(spatial_input),
+                physical_net(physical_input),
+                gate,
+            )
             for spatial_net, physical_net in zip(self.spatial_q_networks, self.physical_q_networks)
         )
 
@@ -171,11 +210,152 @@ class PhysicsGuidedCritic(BaseModel):
         spatial_features, physical_features = self._split_features(features)
 
         spatial_input = th.cat([spatial_features, actions], dim=1)
+        if not self.use_physics_branch:
+            return self.spatial_q_networks[0](spatial_input)
         physical_input = th.cat([physical_features, actions], dim=1)
-        return (
-            self.omega_spatial * self.spatial_q_networks[0](spatial_input)
-            + self.omega_physical * self.physical_q_networks[0](physical_input)
+        gate = (
+            self._adaptive_gate(spatial_features, physical_features)[0]
+            if self.use_adaptive_physics_gate
+            else None
         )
+        return self._fuse_q(
+            self.spatial_q_networks[0](spatial_input),
+            self.physical_q_networks[0](physical_input),
+            gate,
+        )
+
+
+class GatedWindResidualActor(Actor):
+    """Actor with gated speed and yaw residuals.
+
+    In open space the speed residual is signed. Near an obstacle its positive
+    component is removed, so the residual can only decelerate. A small yaw
+    residual remains available near obstacles for avoidance steering.
+    """
+
+    def __init__(
+        self,
+        *args: Any,
+        physical_feature_dim: int = 5,
+        residual_hidden_dim: int = 16,
+        residual_max_action: float = 0.20,
+        residual_yaw_max_action: float = 0.20,
+        obstacle_feature_dim: int = 25,
+        obstacle_proximity_threshold: float = 0.60,
+        obstacle_transition: float = 0.15,
+        minimum_wind_strength: float = 0.08,
+        wind_strength_transition: float = 0.10,
+        minimum_wind_confidence: float = 0.25,
+        confidence_transition: float = 0.25,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(*args, **kwargs)
+        self.physical_feature_dim = int(physical_feature_dim)
+        self.spatial_feature_dim = self.features_dim - self.physical_feature_dim
+        self.residual_hidden_dim = int(residual_hidden_dim)
+        self.residual_max_action = float(residual_max_action)
+        self.residual_yaw_max_action = float(residual_yaw_max_action)
+        self.obstacle_feature_dim = int(obstacle_feature_dim)
+        self.obstacle_proximity_threshold = float(obstacle_proximity_threshold)
+        self.obstacle_transition = float(obstacle_transition)
+        self.minimum_wind_strength = float(minimum_wind_strength)
+        self.wind_strength_transition = float(wind_strength_transition)
+        self.minimum_wind_confidence = float(minimum_wind_confidence)
+        self.confidence_transition = float(confidence_transition)
+
+        if self.physical_feature_dim != 5:
+            raise ValueError("GatedWindResidualActor expects five physical features.")
+        if self.spatial_feature_dim <= 0:
+            raise ValueError("physical_feature_dim must be smaller than features_dim.")
+        if not 0 < self.obstacle_feature_dim <= self.spatial_feature_dim:
+            raise ValueError("obstacle_feature_dim must fit inside spatial features.")
+        positive_values = (
+            self.residual_hidden_dim,
+            self.residual_max_action,
+            self.residual_yaw_max_action,
+            self.obstacle_transition,
+            self.wind_strength_transition,
+            self.confidence_transition,
+        )
+        if any(value <= 0 for value in positive_values):
+            raise ValueError("Residual dimensions, limits, and transitions must be positive.")
+
+        action_dim = get_action_dim(self.action_space)
+        self.mu = nn.Sequential(
+            *create_mlp(
+                self.spatial_feature_dim,
+                action_dim,
+                self.net_arch,
+                self.activation_fn,
+                squash_output=True,
+            )
+        )
+        self.wind_residual = nn.Sequential(
+            nn.Linear(self.features_dim, self.residual_hidden_dim),
+            self.activation_fn(),
+            nn.Linear(self.residual_hidden_dim, 2),
+            nn.Tanh(),
+        )
+        nn.init.zeros_(self.wind_residual[-2].weight)
+        nn.init.zeros_(self.wind_residual[-2].bias)
+
+    @staticmethod
+    def _smooth_gate(value: th.Tensor, threshold: float, transition: float) -> th.Tensor:
+        x = ((value - threshold) / transition).clamp(0.0, 1.0)
+        return x * x * (3.0 - 2.0 * x)
+
+    def forward(self, obs: th.Tensor) -> th.Tensor:
+        features = self.extract_features(obs, self.features_extractor)
+        if features.dim() > 2:
+            features = th.flatten(features, start_dim=1)
+        spatial = features[:, : self.spatial_feature_dim]
+        physical = features[:, -self.physical_feature_dim :]
+        navigation_action = self.mu(spatial)
+
+        obstacle_proximity = spatial[:, : self.obstacle_feature_dim].amax(
+            dim=1, keepdim=True
+        )
+        obstacle_near_gate = self._smooth_gate(
+            obstacle_proximity,
+            self.obstacle_proximity_threshold - self.obstacle_transition,
+            self.obstacle_transition,
+        )
+        obstacle_far_gate = 1.0 - obstacle_near_gate
+        normalized_wind = 2.0 * (physical[:, :2] - 0.5)
+        wind_strength = th.linalg.vector_norm(normalized_wind, dim=1, keepdim=True)
+        wind_gate = self._smooth_gate(
+            wind_strength,
+            self.minimum_wind_strength,
+            self.wind_strength_transition,
+        )
+        confidence_gate = self._smooth_gate(
+            physical[:, 4:5],
+            self.minimum_wind_confidence,
+            self.confidence_transition,
+        )
+        wind_confident_gate = wind_gate * confidence_gate
+        residual = self.wind_residual(features)
+
+        # Open space permits signed speed adaptation. Near an obstacle, only
+        # the negative component survives, enforcing Delta-v <= 0.
+        negative_speed = th.minimum(residual[:, 0:1], th.zeros_like(residual[:, 0:1]))
+        speed_residual = self.residual_max_action * (
+            # Wind-conditioned signed adjustment is allowed only in open space.
+            obstacle_far_gate * wind_confident_gate * residual[:, 0:1]
+            # Near obstacles, deceleration remains available even when the
+            # wind sensor is uncertain; positive speed correction is removed.
+            + obstacle_near_gate * negative_speed
+        )
+
+        # Yaw steering is available in both open and near-obstacle regimes.
+        # Keep the wind/confidence gate so an untrusted physical observation
+        # cannot inject an uncontrolled steering correction.
+        yaw_residual = self.residual_yaw_max_action * wind_confident_gate * residual[:, 1:2]
+
+        action = navigation_action.clone()
+        action[:, 0:1] = (action[:, 0:1] + speed_residual).clamp(-1.0, 1.0)
+        action[:, -1:] = (action[:, -1:] + yaw_residual).clamp(-1.0, 1.0)
+        return action
 
 
 class PineTD3Policy(TD3Policy):
@@ -193,19 +373,43 @@ class PineTD3Policy(TD3Policy):
         optimizer_kwargs: Optional[Dict[str, Any]] = None,
         n_critics: int = 2,
         share_features_extractor: bool = False,
-        physical_feature_dim: int = 4,
+        physical_feature_dim: int = 5,
         spatial_feature_dim: Optional[int] = None,
-        omega_spatial: float = 0.7,
-        omega_physical: float = 0.3,
-        critic_mode: str = "dual_stream",
+        use_physics_branch: Optional[bool] = None,
+        use_adaptive_physics_gate: bool = True,
+        use_wind_residual_actor: bool = True,
+        residual_hidden_dim: int = 16,
+        residual_max_action: float = 0.20,
+        residual_yaw_max_action: float = 0.20,
+        obstacle_feature_dim: int = 25,
+        obstacle_proximity_threshold: float = 0.60,
+        obstacle_transition: float = 0.15,
+        minimum_wind_strength: float = 0.08,
+        wind_strength_transition: float = 0.10,
+        minimum_wind_confidence: float = 0.25,
+        confidence_transition: float = 0.25,
     ) -> None:
         self.physical_feature_dim = physical_feature_dim
         self.spatial_feature_dim = spatial_feature_dim
-        self.omega_spatial = omega_spatial
-        self.omega_physical = omega_physical
-        self.critic_mode = critic_mode.lower()
-        if self.critic_mode not in {"dual_stream", "single_stream"}:
-            raise ValueError("critic_mode must be 'dual_stream' or 'single_stream'.")
+        self.use_adaptive_physics_gate = bool(use_adaptive_physics_gate)
+        self.use_physics_branch = (
+            self.use_adaptive_physics_gate
+            if use_physics_branch is None
+            else bool(use_physics_branch)
+        )
+        self.use_wind_residual_actor = bool(use_wind_residual_actor)
+        self.residual_actor_kwargs = {
+            "residual_hidden_dim": int(residual_hidden_dim),
+            "residual_max_action": float(residual_max_action),
+            "residual_yaw_max_action": float(residual_yaw_max_action),
+            "obstacle_feature_dim": int(obstacle_feature_dim),
+            "obstacle_proximity_threshold": float(obstacle_proximity_threshold),
+            "obstacle_transition": float(obstacle_transition),
+            "minimum_wind_strength": float(minimum_wind_strength),
+            "wind_strength_transition": float(wind_strength_transition),
+            "minimum_wind_confidence": float(minimum_wind_confidence),
+            "confidence_transition": float(confidence_transition),
+        }
         super().__init__(
             observation_space=observation_space,
             action_space=action_space,
@@ -221,17 +425,31 @@ class PineTD3Policy(TD3Policy):
             share_features_extractor=share_features_extractor,
         )
 
-    def make_critic(self, features_extractor: Optional[BaseFeaturesExtractor] = None) -> Union[PhysicsGuidedCritic, ContinuousCritic]:
-        critic_kwargs = self._update_features_extractor(self.critic_kwargs, features_extractor)
-        if self.critic_mode == "single_stream":
-            return ContinuousCritic(**critic_kwargs).to(self.device)
+    def make_actor(self, features_extractor: Optional[BaseFeaturesExtractor] = None) -> Actor:
+        actor_kwargs = self._update_features_extractor(
+            self.actor_kwargs, features_extractor
+        )
+        if not self.use_wind_residual_actor:
+            return Actor(**actor_kwargs).to(self.device)
+        return GatedWindResidualActor(
+            **actor_kwargs,
+            physical_feature_dim=self.physical_feature_dim,
+            **self.residual_actor_kwargs,
+        ).to(self.device)
 
+    def make_critic(self, features_extractor: Optional[BaseFeaturesExtractor] = None) -> PhysicsGuidedCritic:
+        critic_kwargs = self._update_features_extractor(self.critic_kwargs, features_extractor)
         critic_kwargs.update(
             {
                 "physical_feature_dim": self.physical_feature_dim,
                 "spatial_feature_dim": self.spatial_feature_dim,
-                "omega_spatial": self.omega_spatial,
-                "omega_physical": self.omega_physical,
+                "use_physics_branch": self.use_physics_branch,
+                "use_adaptive_physics_gate": self.use_adaptive_physics_gate,
+                "obstacle_feature_dim": self.residual_actor_kwargs["obstacle_feature_dim"],
+                "obstacle_proximity_threshold": self.residual_actor_kwargs[
+                    "obstacle_proximity_threshold"
+                ],
+                "obstacle_transition": self.residual_actor_kwargs["obstacle_transition"],
             }
         )
         return PhysicsGuidedCritic(**critic_kwargs).to(self.device)
@@ -242,108 +460,27 @@ class PineTD3Policy(TD3Policy):
             dict(
                 physical_feature_dim=self.physical_feature_dim,
                 spatial_feature_dim=self.spatial_feature_dim,
-                omega_spatial=self.omega_spatial,
-                omega_physical=self.omega_physical,
-                critic_mode=self.critic_mode,
+                use_physics_branch=self.use_physics_branch,
+                use_adaptive_physics_gate=self.use_adaptive_physics_gate,
+                use_wind_residual_actor=self.use_wind_residual_actor,
+                **self.residual_actor_kwargs,
             )
         )
         return data
 
 
-class PineCnnPolicy(PineTD3Policy):
-    def __init__(
-        self,
-        observation_space: Any,
-        action_space: Any,
-        lr_schedule: Schedule,
-        net_arch: Optional[Union[List[int], Dict[str, List[int]]]] = None,
-        activation_fn: Type[nn.Module] = nn.ReLU,
-        features_extractor_class: Type[BaseFeaturesExtractor] = NatureCNN,
-        features_extractor_kwargs: Optional[Dict[str, Any]] = None,
-        normalize_images: bool = True,
-        optimizer_class: Type[th.optim.Optimizer] = th.optim.Adam,
-        optimizer_kwargs: Optional[Dict[str, Any]] = None,
-        n_critics: int = 2,
-        share_features_extractor: bool = False,
-        physical_feature_dim: int = 4,
-        spatial_feature_dim: Optional[int] = None,
-        omega_spatial: float = 0.7,
-        omega_physical: float = 0.3,
-        critic_mode: str = "dual_stream",
-    ) -> None:
-        super().__init__(
-            observation_space=observation_space,
-            action_space=action_space,
-            lr_schedule=lr_schedule,
-            net_arch=net_arch,
-            activation_fn=activation_fn,
-            features_extractor_class=features_extractor_class,
-            features_extractor_kwargs=features_extractor_kwargs,
-            normalize_images=normalize_images,
-            optimizer_class=optimizer_class,
-            optimizer_kwargs=optimizer_kwargs,
-            n_critics=n_critics,
-            share_features_extractor=share_features_extractor,
-            physical_feature_dim=physical_feature_dim,
-            spatial_feature_dim=spatial_feature_dim,
-            omega_spatial=omega_spatial,
-            omega_physical=omega_physical,
-            critic_mode=critic_mode,
-        )
 
 
-class PineMultiInputPolicy(PineTD3Policy):
-    def __init__(
-        self,
-        observation_space: Any,
-        action_space: Any,
-        lr_schedule: Schedule,
-        net_arch: Optional[Union[List[int], Dict[str, List[int]]]] = None,
-        activation_fn: Type[nn.Module] = nn.ReLU,
-        features_extractor_class: Type[BaseFeaturesExtractor] = CombinedExtractor,
-        features_extractor_kwargs: Optional[Dict[str, Any]] = None,
-        normalize_images: bool = True,
-        optimizer_class: Type[th.optim.Optimizer] = th.optim.Adam,
-        optimizer_kwargs: Optional[Dict[str, Any]] = None,
-        n_critics: int = 2,
-        share_features_extractor: bool = False,
-        physical_feature_dim: int = 4,
-        spatial_feature_dim: Optional[int] = None,
-        omega_spatial: float = 0.7,
-        omega_physical: float = 0.3,
-        critic_mode: str = "dual_stream",
-    ) -> None:
-        super().__init__(
-            observation_space=observation_space,
-            action_space=action_space,
-            lr_schedule=lr_schedule,
-            net_arch=net_arch,
-            activation_fn=activation_fn,
-            features_extractor_class=features_extractor_class,
-            features_extractor_kwargs=features_extractor_kwargs,
-            normalize_images=normalize_images,
-            optimizer_class=optimizer_class,
-            optimizer_kwargs=optimizer_kwargs,
-            n_critics=n_critics,
-            share_features_extractor=share_features_extractor,
-            physical_feature_dim=physical_feature_dim,
-            spatial_feature_dim=spatial_feature_dim,
-            omega_spatial=omega_spatial,
-            omega_physical=omega_physical,
-            critic_mode=critic_mode,
-        )
 
 
 PineMlpPolicy = PineTD3Policy
 
 
 class PINE_TD3(TD3):
-    """TD3 with PGVL rho_t-weighted TD loss and selectable critic structure."""
+    """TD3 with adaptive physics-consistent value fusion."""
 
     policy_aliases = {
         "MlpPolicy": PineMlpPolicy,
-        "CnnPolicy": PineCnnPolicy,
-        "MultiInputPolicy": PineMultiInputPolicy,
     }
 
     def __init__(
@@ -372,15 +509,11 @@ class PINE_TD3(TD3):
         seed: Optional[int] = None,
         device: Union[th.device, str] = "auto",
         _init_setup_model: bool = True,
-        pgvl_eta_rho: float = 1.0,
     ) -> None:
-        self.pgvl_eta_rho = float(pgvl_eta_rho)
         if replay_buffer_class is None:
             replay_buffer_class = PineReplayBuffer
 
         replay_buffer_kwargs = dict(replay_buffer_kwargs or {})
-        if replay_buffer_class is PineReplayBuffer or issubclass(replay_buffer_class, PineReplayBuffer):
-            replay_buffer_kwargs.setdefault("rho_default", 1.0)
 
         super().__init__(
             policy=policy,
@@ -413,8 +546,7 @@ class PINE_TD3(TD3):
         self.policy.set_training_mode(True)
         self._update_learning_rate([self.actor.optimizer, self.critic.optimizer])
 
-        actor_losses, critic_losses = [], []
-        rho_means, rho_maxes = [], []
+        actor_losses, critic_losses, gate_means = [], [], []
 
         for _ in range(gradient_steps):
             self._n_updates += 1
@@ -430,16 +562,16 @@ class PINE_TD3(TD3):
                 target_q_values = replay_data.rewards + (1 - replay_data.dones) * self.gamma * next_q_values
 
             current_q_values = self.critic(replay_data.observations, replay_data.actions)
-            rho_t = getattr(replay_data, "rho", th.ones_like(target_q_values)).float().clamp_min(0.0)
 
             critic_loss = sum(
-                (rho_t * F.mse_loss(current_q, target_q_values, reduction="none")).mean()
+                F.mse_loss(current_q, target_q_values)
                 for current_q in current_q_values
             )
             assert isinstance(critic_loss, th.Tensor)
             critic_losses.append(critic_loss.item())
-            rho_means.append(rho_t.mean().item())
-            rho_maxes.append(rho_t.max().item())
+            if self.critic.use_adaptive_physics_gate:
+                with th.no_grad():
+                    gate_means.append(self.critic.physics_gate(replay_data.observations)[0].mean().item())
 
             self.critic.optimizer.zero_grad()
             critic_loss.backward()
@@ -462,8 +594,8 @@ class PINE_TD3(TD3):
         if len(actor_losses) > 0:
             self.logger.record("train/actor_loss", np.mean(actor_losses))
         self.logger.record("train/critic_loss", np.mean(critic_losses))
-        self.logger.record("train/pgvl_rho_mean", np.mean(rho_means))
-        self.logger.record("train/pgvl_rho_max", np.max(rho_maxes))
+        if gate_means:
+            self.logger.record("train/physics_gate_mean", np.mean(gate_means))
 
 
 PineTD3 = PINE_TD3
@@ -474,8 +606,7 @@ __all__ = [
     "PINE_TD3",
     "PineTD3Policy",
     "PineMlpPolicy",
-    "PineCnnPolicy",
-    "PineMultiInputPolicy",
+    "GatedWindResidualActor",
     "PhysicsGuidedCritic",
     "PineReplayBuffer",
 ]

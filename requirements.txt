@@ -1,0 +1,5 @@
+# Standalone module validation environment; not the original AirSim experiment lock.
+numpy==1.24.4
+torch==2.1.0
+gymnasium==0.29.1
+stable-baselines3==2.3.2
