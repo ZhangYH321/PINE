@@ -1,4 +1,3 @@
-"""Configure the main correlated wind and sensor model."""
 from pine.wind import CorrelatedRandomWindField
 
 
@@ -15,7 +14,7 @@ def _getbool(cfg, option: str, fallback: bool) -> bool:
 
 
 def build_wind_field(cfg, map_range_xy, z_range, dynamic_model=None, dt=0.1):
-    """Build the configured wind backend without touching global RNG state."""
+
 
     model = cfg.get("wind", "model", fallback="correlated").strip().lower()
     if model != "correlated":

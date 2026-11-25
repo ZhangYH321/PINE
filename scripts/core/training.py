@@ -28,7 +28,7 @@ from scripts.utils.pine_sac import PineSACPolicy
 
 
 class LinearActionNoiseCallback(BaseCallback):
-    """Linearly update Gaussian exploration noise over environment steps."""
+
 
     def __init__(self, initial_sigma: float, final_sigma: float, total_timesteps: int) -> None:
         super().__init__()
@@ -73,8 +73,8 @@ class CrashRateCallback(BaseCallback):
 
     def _on_step(self) -> bool:
         self.step_counter += 1
-        # VecEnv has already reset finished environments before callbacks run.
-        # Read the terminal transition rather than the reset env's flags.
+
+
         for info in self.locals.get("infos", []):
             if not isinstance(info, dict) or "episode" not in info:
                 continue
@@ -97,7 +97,7 @@ class CrashRateCallback(BaseCallback):
 
 
 class RolloutMetricsCallback(BaseCallback):
-    """Persist SB3-style rollout metrics with their corresponding global step."""
+
 
     FIELDNAMES = (
         "global_step",
@@ -195,18 +195,8 @@ class RolloutMetricsCallback(BaseCallback):
             self._handle = None
 
 
-
-
 class DeterministicEvalBestModelCallback(BaseCallback):
-    """Select ``best_model`` using an independent deterministic evaluation.
 
-    Training rollouts contain exploration noise and are therefore unsuitable
-    as the sole checkpoint-selection signal.  This callback evaluates the
-    current policy in a separate environment every ``eval_freq_steps`` using
-    fixed, independently seeded episodes and ``deterministic=True`` actions.
-    Selection is lexicographic: success rate (higher), successful-episode
-    energy (lower), then successful-episode steps (lower).
-    """
 
     def __init__(
         self,
@@ -247,7 +237,7 @@ class DeterministicEvalBestModelCallback(BaseCallback):
         if not eval_cfg.has_section("options"):
             eval_cfg.add_section("options")
         eval_cfg.set("options", "seed", str(self.eval_seed))
-        # Evaluation must not create trajectory artifacts in the training run.
+
         if eval_cfg.has_section("wind"):
             eval_cfg.set("wind", "log_trajectory", "False")
         ensure_env_registered()
@@ -420,7 +410,7 @@ def build_training_artifacts(cfg) -> TrainingArtifacts:
 
 
 class TrainingRunner:
-    """Owns environment creation, model construction, and training."""
+
 
     def __init__(self, config_file: str | Path, use_wandb=None):
         ensure_env_registered()
@@ -428,8 +418,8 @@ class TrainingRunner:
         self.cfg = load_config(self.config_file)
         if use_wandb is not None:
             self.cfg.set("options", "use_wandb", str(bool(use_wandb)))
-        # Configuration establishes the spaces after construction. Keep the
-        # legacy Gym interface for Shimmy and set attributes on the real env.
+
+
         self.env = gym.make("airsim-env-v0", disable_env_checker=True).unwrapped
         self.env.set_config(self.cfg)
         self.artifacts = build_training_artifacts(self.cfg)
@@ -721,11 +711,8 @@ class TrainingRunner:
 
     def run(self) -> Path:
         model = self.build_model()
-        # ``run()`` trains in evaluation-sized segments so the single AirSim
-        # vehicle can be reused for deterministic checkpoint evaluation.  SB3
-        # otherwise creates a new TensorBoard writer on every ``learn()`` call,
-        # which W&B imports as separate runs and renders as periodic gaps on
-        # Windows.  Install one persistent logger before the first segment.
+
+
         model.set_logger(
             configure_logger(
                 str(self.artifacts.log_dir),
@@ -752,8 +739,8 @@ class TrainingRunner:
             eval_freq_steps=eval_freq_steps,
             eval_episodes=eval_episodes,
             eval_seed=eval_seed,
-            # AirSim has one configured vehicle.  Evaluation runs only after
-            # a training segment has ended, then the VecEnv is resynchronized.
+
+
             eval_env=self.env,
         )
         evaluator.model = model
@@ -773,15 +760,13 @@ class TrainingRunner:
                 evaluator.num_timesteps = int(model.num_timesteps)
                 evaluator._run_eval_if_due()
 
-                # The evaluation deliberately reuses the single AirSim
-                # vehicle, so restore the training VecEnv's initial
-                # observation before the next segment.
+
                 if model.num_timesteps < total_timesteps:
                     next_obs = model.env.reset()
                     model._last_obs = next_obs
                     model._last_original_obs = next_obs
-            # Evaluate the final policy as well, even when total_timesteps is
-            # not an exact multiple of eval_freq_steps.
+
+
             evaluator.num_timesteps = int(model.num_timesteps)
             if evaluator.last_eval_step != evaluator.num_timesteps:
                 evaluator._run_eval_if_due(force=True)

@@ -7,8 +7,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from scripts.core.config import resolve_config_path  # noqa: E402
-from scripts.core.training import TrainingRunner  # noqa: E402
+from scripts.core.config import resolve_config_path
+from scripts.core.training import TrainingRunner
 
 
 def get_parser():

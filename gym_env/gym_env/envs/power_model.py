@@ -9,7 +9,7 @@ import numpy as np
 
 @dataclass
 class RotorcraftParams:
-    """Physical parameters used by the multirotor power estimator."""
+
 
     rho: float = 1.225
     g: float = 9.81
@@ -28,7 +28,7 @@ class RotorcraftParams:
 
 
 class MultirotorPowerModel:
-    """Estimate induced, profile, and parasitic power for a multirotor."""
+
 
     def __init__(self, params: RotorcraftParams) -> None:
         self.params = params
@@ -37,7 +37,7 @@ class MultirotorPowerModel:
         self.rotor_tip_speed = params.rotor_speed * params.rotor_radius
 
     def power_components(self, v_airspeed: Sequence[float]) -> tuple[float, float, float, dict[str, float]]:
-        """Return `(induced, profile, parasitic, debug)` for the supplied airspeed."""
+
 
         params = self.params
         va_n, va_e, va_d = np.asarray(v_airspeed, dtype=float)

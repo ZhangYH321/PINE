@@ -19,30 +19,11 @@ from stable_baselines3.td3.policies import Actor, TD3Policy
 
 
 class PineReplayBuffer(ReplayBuffer):
-    """Compatibility alias for ordinary uniform TD3 replay.
-
-    Adaptive physics fusion is computed from observations inside the critic;
-    the replay buffer stores no transition-specific learning weights.
-    """
+    pass
 
 
 class PhysicsGuidedCritic(BaseModel):
-    """
-    TD3 critic with an optional physical stream and adaptive fusion gate.
 
-    The physical stream is enabled only when the policy-visible state
-    indicates a meaningful, trusted headwind and sufficient obstacle clearance:
-
-        Q_i = Q_i^S(s_spatial, a) + g(s) Q_i^P(s_physical, a)
-        g(s) = c(s) h(s) (1 - o(s)).
-
-    When the physical stream is present but ``use_adaptive_physics_gate=False``,
-    the critic uses ``Q_i = Q_i^S + Q_i^P``.  With the physical stream
-    disabled, only ``Q_i^S`` is built and used.
-
-    ``omega_*`` are retained for checkpoint/config compatibility with the
-    previous fixed dual-stream ablation and are not used by adaptive fusion.
-    """
 
     features_extractor: BaseFeaturesExtractor
 
@@ -90,8 +71,8 @@ class PhysicsGuidedCritic(BaseModel):
             )
 
         self.use_adaptive_physics_gate = bool(use_adaptive_physics_gate)
-        # Preserve the behavior of existing checkpoints/configs, where the
-        # gate flag was also the physical-branch switch.
+
+
         self.use_physics_branch = (
             self.use_adaptive_physics_gate
             if use_physics_branch is None
@@ -141,13 +122,7 @@ class PhysicsGuidedCritic(BaseModel):
     def _adaptive_gate(
         self, spatial_features: th.Tensor, physical_features: th.Tensor
     ) -> Tuple[th.Tensor, th.Tensor, th.Tensor, th.Tensor]:
-        """Return g, h, c, o from normalized policy-visible features.
 
-        The first physical feature is signed wind projected onto the goal
-        direction, encoded as 0.5 for no wind. Values below 0.5 therefore
-        represent headwind. The first spatial features are obstacle proximity
-        values where larger means closer.
-        """
         wind_along_goal = physical_features[:, 0:1].clamp(0.0, 1.0)
         headwind_strength = ((0.5 - wind_along_goal) * 2.0).clamp(0.0, 1.0)
         confidence = physical_features[:, 4:5].clamp(0.0, 1.0)
@@ -163,7 +138,7 @@ class PhysicsGuidedCritic(BaseModel):
         return gate, headwind_strength, confidence, obstacle_proximity
 
     def physics_gate(self, obs: th.Tensor) -> Tuple[th.Tensor, ...]:
-        """Expose gate components for diagnostics without changing Q logic."""
+
         features = self.extract_features(obs, self.features_extractor)
         spatial_features, physical_features = self._split_features(features)
         return self._adaptive_gate(spatial_features, physical_features)
@@ -226,12 +201,7 @@ class PhysicsGuidedCritic(BaseModel):
 
 
 class GatedWindResidualActor(Actor):
-    """Actor with gated speed and yaw residuals.
 
-    In open space the speed residual is signed. Near an obstacle its positive
-    component is removed, so the residual can only decelerate. A small yaw
-    residual remains available near obstacles for avoidance steering.
-    """
 
     def __init__(
         self,
@@ -336,20 +306,17 @@ class GatedWindResidualActor(Actor):
         wind_confident_gate = wind_gate * confidence_gate
         residual = self.wind_residual(features)
 
-        # Open space permits signed speed adaptation. Near an obstacle, only
-        # the negative component survives, enforcing Delta-v <= 0.
+
         negative_speed = th.minimum(residual[:, 0:1], th.zeros_like(residual[:, 0:1]))
         speed_residual = self.residual_max_action * (
-            # Wind-conditioned signed adjustment is allowed only in open space.
+
             obstacle_far_gate * wind_confident_gate * residual[:, 0:1]
-            # Near obstacles, deceleration remains available even when the
-            # wind sensor is uncertain; positive speed correction is removed.
+
+
             + obstacle_near_gate * negative_speed
         )
 
-        # Yaw steering is available in both open and near-obstacle regimes.
-        # Keep the wind/confidence gate so an untrusted physical observation
-        # cannot inject an uncontrolled steering correction.
+
         yaw_residual = self.residual_yaw_max_action * wind_confident_gate * residual[:, 1:2]
 
         action = navigation_action.clone()
@@ -469,15 +436,11 @@ class PineTD3Policy(TD3Policy):
         return data
 
 
-
-
-
-
 PineMlpPolicy = PineTD3Policy
 
 
 class PINE_TD3(TD3):
-    """TD3 with adaptive physics-consistent value fusion."""
+
 
     policy_aliases = {
         "MlpPolicy": PineMlpPolicy,
@@ -550,7 +513,7 @@ class PINE_TD3(TD3):
 
         for _ in range(gradient_steps):
             self._n_updates += 1
-            replay_data = self.replay_buffer.sample(batch_size, env=self._vec_normalize_env)  # type: ignore[union-attr]
+            replay_data = self.replay_buffer.sample(batch_size, env=self._vec_normalize_env)
 
             with th.no_grad():
                 noise = replay_data.actions.clone().data.normal_(0, self.target_policy_noise)

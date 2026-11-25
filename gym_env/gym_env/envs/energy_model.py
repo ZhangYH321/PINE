@@ -25,7 +25,7 @@ def wind_assist_energy_per_progress(
     goal_progress_m: float,
     minimum_progress_speed: float = 0.1,
 ) -> float:
-    """Return signed wind-assisted energy savings for one transition."""
+
 
     progress = max(float(goal_progress_m), 0.0)
     if progress <= 0.0:
@@ -54,7 +54,7 @@ def wind_assist_energy_per_progress(
 
 
 class ForwardFlightPowerModel:
-    """Lightweight forward-flight model used for no-wind counterfactuals."""
+
 
     def __init__(self, params: RotorcraftParams, profile_advance_coefficient: float = 4.6) -> None:
         self.params = params
@@ -116,7 +116,7 @@ class ForwardFlightPowerModel:
 
 
 class AirSimRotorEnergyModel:
-    """Estimate battery power using a selectable AirSim/calibrated model."""
+
 
     AIRSIM_ROTOR = "airsim_rotor"
     HOVER_CALIBRATED_FORWARD = "hover_calibrated_forward"
@@ -241,8 +241,8 @@ class AirSimRotorEnergyModel:
         self.total_energy_j = 0.0
         self.fallback_count = 0
         if self.power_model_mode == self.HOVER_CALIBRATED_FORWARD:
-            # Calibrate once per environment instance, or use the configured
-            # experiment-wide reference. Never rescale power between episodes.
+
+
             if self.hover_battery_power_w is None:
                 hover_sample = self._sample_airsim_rotor(
                     np.zeros(3, dtype=np.float32)

@@ -1,20 +1,3 @@
-"""Print detailed tables from saved ``compare_saved_models`` results.
-
-The script reads ``episode_metrics.csv`` only; it never loads a checkpoint or
-starts AirSim.  By default it reports every algorithm in the saved file and
-prints:
-
-* terminal-status counts;
-* metrics over each algorithm's own successful episodes;
-* metrics over common successful episodes (with and without PPO); and
-* PINE-versus-baseline improvement tables for SAC and TD3.
-
-For improvement tables, a positive percentage always means an improvement
-for PINE.  Higher-is-better metrics use ``(PINE - baseline) / |baseline|``;
-lower-is-better metrics such as steps and energy use
-``(baseline - PINE) / |baseline|``.
-"""
-
 from __future__ import annotations
 
 import argparse

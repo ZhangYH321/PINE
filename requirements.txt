@@ -1,4 +1,3 @@
-# AirSim training runtime (Python 3.8). Install in a dedicated environment.
 numpy==1.24.4
 torch==2.1.0
 gymnasium==0.29.1

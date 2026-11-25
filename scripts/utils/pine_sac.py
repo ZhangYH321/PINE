@@ -1,10 +1,3 @@
-"""PINE policy components for Soft Actor-Critic.
-
-The SAC variant keeps SB3's stochastic actor and entropy-regularized update,
-while using the same spatial/physical critic fusion and gated speed residual as
-the PINE-TD3 implementation.
-"""
-
 from typing import Any, Dict, List, Optional, Tuple, Type, Union
 
 import torch as th
@@ -17,7 +10,7 @@ from stable_baselines3.sac.policies import Actor, SACPolicy
 
 
 class GatedWindResidualSACActor(Actor):
-    """SAC actor with the same gated speed/yaw residual as PINE-TD3."""
+
 
     def __init__(
         self,
@@ -117,7 +110,7 @@ class GatedWindResidualSACActor(Actor):
 
 
 class PineSACCritic(BaseModel):
-    """SAC critic with optional adaptive spatial/physical value fusion."""
+
 
     def __init__(
         self,
@@ -222,7 +215,7 @@ class PineSACCritic(BaseModel):
 
 
 class PineSACPolicy(SACPolicy):
-    """SAC policy using the PINE actor and critic components."""
+
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         self.physical_feature_dim = int(kwargs.pop("physical_feature_dim", 5))

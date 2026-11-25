@@ -1,2 +1,1 @@
-# Install after requirements.txt: AirSim's setup imports its runtime dependencies.
 airsim==1.8.1

@@ -1,8 +1,3 @@
-"""Correlated simulated wind; input positions use positive-up height in slot 2.
-
-Extracted from the main environment; no dataset or legacy grid backend.
-"""
-
 from __future__ import annotations
 
 from typing import Any, Optional, Sequence
@@ -18,7 +13,7 @@ def _as_float_vector(value: Sequence[float], size: int = 3) -> np.ndarray:
 
 
 class WindField:
-    """Common interface for true wind, noisy observation, and episode reset."""
+
 
     model_name = "base"
 
@@ -67,8 +62,8 @@ class WindField:
         turbulence_seed: Optional[int] = None,
         sensor_seed: Optional[int] = None,
     ) -> None:
-        # Explicit stream seeds keep field, turbulence, and sensor sampling
-        # independent. The episode seed is a deterministic standalone fallback.
+
+
         field_sequence = (
             np.random.SeedSequence([int(episode_seed), self.field_seed, 0])
             if field_seed is None
@@ -132,7 +127,7 @@ class WindField:
         turbulence_seed: Optional[int] = None,
         sensor_seed: Optional[int] = None,
     ) -> None:
-        """Reset one scenario with independently controlled RNG streams."""
+
 
         episode_seed = self.field_seed if field_seed is None else int(field_seed)
         self.reset_episode(
@@ -146,7 +141,7 @@ class WindField:
         raise NotImplementedError
 
     def sample_base(self, position: Sequence[float], time_s: Optional[float] = None) -> np.ndarray:
-        """Sample the deterministic spatial/mean part used for field displays."""
+
 
         return self.sample_true(position, time_s)
 
@@ -219,7 +214,7 @@ class WindField:
 
 
 class CorrelatedRandomWindField(WindField):
-    """Continuous spatially correlated wind with ABL mean and VK-like turbulence."""
+
 
     model_name = "correlated"
 
@@ -358,7 +353,7 @@ class CorrelatedRandomWindField(WindField):
         )
         spectrum *= filter_gain[None, ...]
 
-        # Helmholtz projection removes most divergence from the perturbation field.
+
         k_squared = kx3 * kx3 + ky3 * ky3 + kz3 * kz3
         dot = kx3 * spectrum[0] + ky3 * spectrum[1] + kz3 * spectrum[2]
         nonzero = k_squared > 1e-12
@@ -435,8 +430,8 @@ class CorrelatedRandomWindField(WindField):
         count = self.turbulence_sequence_length
         frequencies = np.fft.rfftfreq(count, d=self.dt)
         omega_tau = 2.0 * np.pi * frequencies * self.turbulence_time_scale
-        # A one-dimensional von Karman-shaped spectrum. Normalization below
-        # enforces the configured RMS for each NED component exactly.
+
+
         target_psd = (1.0 + omega_tau * omega_tau) ** (-5.0 / 6.0)
         target_psd[0] = 0.0
         sequence = np.zeros((count, 3), dtype=np.float32)
