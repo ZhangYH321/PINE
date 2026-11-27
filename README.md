@@ -15,7 +15,7 @@ We propose PINE for energy-efficient quadrotor navigation in spatially non-unifo
 | `scripts/train.py`, `scripts/core/` | Training entrypoint and training utilities |
 | `configs/`, `airsim_settings/` | Experiment and simulator settings |
 
-The [main test-set data](data/README.md) include 1,200 recorded episodes for six learning-based methods, with 200 matched scenarios per method. [Episode records](data/main/episode_metrics.csv) contain outcomes, rewards, steps, energy, speed, and scenario identifiers; [summary results](data/main/summary.csv) report success rates and successful-episode statistics.
+The [main experiment summary](data/README.md) covers six learning-based methods evaluated on 200 matched scenarios per method. The [summary results](data/main/summary.csv) report success rates and successful-episode reward, steps, energy, and speed statistics.
 
 ## How to run
 
@@ -40,10 +40,4 @@ For PINE-SAC, copy `configs/config_NH_center_SimpleMultirotor_3D.ini` to `config
 
 ```bash
 python scripts/train.py --config configs/pine_sac.ini
-```
-
-Summarize the main experiment data:
-
-```bash
-python -m scripts.report_saved_results --input-dir data/main
 ```

@@ -1,24 +1,16 @@
-# Main experiment data
+# Main experiment summary
 
-Recorded main test-set results for DDPG, PPO, SAC, TD3, PINE-SAC, and PINE-TD3: 200 matched scenarios per method, 1,200 episode records in total. Scenario indices are 0–199 and the base test seed is 46.
+The [summary table](main/summary.csv) contains results for DDPG, PPO, SAC, TD3, PINE-SAC, and PINE-TD3, evaluated on 200 matched test scenarios per method with base test seed 46.
 
-- `main/episode_metrics.csv`: recorded episode values, with scenario identifiers and random seeds.
-- `main/summary.csv`: per-method summaries recomputed from the included records. Success rates use all 200 episodes; other means and population standard deviations use each method's successful episodes. Common-success intersections contain 96 episodes for SAC/PINE-SAC and 106 for TD3/PINE-TD3.
+Success rates use all 200 episodes. Other means and population standard deviations use each method's successful episodes. Columns ending in `_mean` and `_std` contain the mean and population standard deviation, respectively.
 
 | Fields | Meaning and units |
 | --- | --- |
-| `algorithm`, `episode_index` | Method and matched scenario identifier |
-| `status`, `success` | Terminal outcome and binary success indicator |
-| `reward`, `steps` | Episode return and number of control steps |
-| `energy_consumption_j` | Model-based episode electrical energy (J) |
-| `speed_mps` | Episode mean ground speed (m/s) |
-| `energy_consumption_per_step_j` | Episode energy divided by control steps (J/step) |
-| `path_distance_per_step_m`, `goal_progress_per_step_m` | Travel distance and net goal progress per control step (m/step) |
-| `goal_x`, `goal_y`, `goal_z` | Goal coordinates (m) |
-| `goal_seed`, `field_seed`, `turbulence_seed`, `sensor_seed` | Scenario random seeds |
-
-From the repository root, summarize the recorded episodes with:
-
-```bash
-python -m scripts.report_saved_results --input-dir data/main
-```
+| `algorithm` | Method |
+| `episodes`, `successes`, `success_rate_pct` | Test count, successful count, and success rate (%) |
+| `reward_*` | Episode return |
+| `steps_*` | Number of control steps |
+| `energy_j_*` | Model-based episode electrical energy (J) |
+| `ground_speed_mps_*` | Episode mean ground speed (m/s) |
+| `energy_per_step_j_*` | Episode energy per control step (J/step) |
+| `goal_progress_per_step_m_*` | Net goal progress per control step (m/step) |

@@ -45,5 +45,4 @@ reviewers/
 !/data/README.md
 !/data/main/
 /data/main/*
-!/data/main/episode_metrics.csv
 !/data/main/summary.csv
