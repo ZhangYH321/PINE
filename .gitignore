@@ -39,3 +39,11 @@ reviewers/
 第二轮审稿意见/
 .workbuddy/
 .publication-review/
+!/assets/pine_architecture.png
+!/data/
+/data/*
+!/data/README.md
+!/data/main/
+/data/main/*
+!/data/main/episode_metrics.csv
+!/data/main/summary.csv
